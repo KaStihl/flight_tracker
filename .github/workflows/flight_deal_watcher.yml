@@ -1,0 +1,38 @@
+# Place this file at: .github/workflows/flight_deal_watcher.yml
+
+name: Flight Deal Watcher
+
+on:
+  schedule:
+    # Runs at 06:00 and 16:00 UTC daily. Cron on GitHub Actions can slip
+    # 5-15 min at busy times — fine for this use case. These two daily runs
+    # also keep the Supabase free-tier project active (it auto-pauses after
+    # ~1 week of zero activity), so you shouldn't need to manually resume it.
+    - cron: "0 6 * * *"
+    - cron: "0 16 * * *"
+  workflow_dispatch: {}  # lets you trigger a manual run from the Actions tab
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run flight deal watcher
+        env:
+          TRAVELPAYOUTS_TOKEN: ${{ secrets.TRAVELPAYOUTS_TOKEN }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          ALERT_TO: ${{ secrets.ALERT_TO }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          AVIASALES_MARKER: ${{ secrets.AVIASALES_MARKER }}
+        run: python flight_deal_watcher.py
