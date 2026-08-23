@@ -299,7 +299,17 @@ def fetch_cheapest_from_origin(origin, trip_type="one_way"):
 
     results = []
     if not payload.get("success"):
+        # Previously this failed silently. Print diagnostics so a "success:
+        # false" response (bad token, unsupported params, no cached data for
+        # this route, etc.) actually shows up in the Actions log instead of
+        # just leaving price_history empty with no explanation.
+        print(f"[WARN] Travelpayouts success=false for origin={origin} trip_type={trip_type}")
+        print(f"[WARN]   errors field: {payload.get('errors')}")
+        print(f"[WARN]   full payload: {payload}")
         return results
+
+    if not payload.get("data"):
+        print(f"[WARN] Travelpayouts success=true but empty 'data' for origin={origin} trip_type={trip_type}")
 
     for destination, entries in payload.get("data", {}).items():
         for _, entry in entries.items():
