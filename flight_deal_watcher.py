@@ -138,6 +138,12 @@ def get_db_connection():
                 checked_at TEXT NOT NULL
             )
         """)
+        # ADD COLUMN IF NOT EXISTS lets this run safely against a table that
+        # already existed before origin_name/destination_name/link were
+        # added, without touching existing rows.
+        cur.execute("ALTER TABLE price_history ADD COLUMN IF NOT EXISTS origin_name TEXT")
+        cur.execute("ALTER TABLE price_history ADD COLUMN IF NOT EXISTS destination_name TEXT")
+        cur.execute("ALTER TABLE price_history ADD COLUMN IF NOT EXISTS link TEXT")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS alerts_sent (
                 id SERIAL PRIMARY KEY,
@@ -159,12 +165,34 @@ def get_db_connection():
     return conn
 
 
-def save_price(conn, origin, destination, price, trip_type, found_at):
+def load_city_names():
+    """
+    Fetches Travelpayouts' public city dictionary (no token needed — it's a
+    static file) and returns a {IATA_code: city_name} dict, used to store
+    human-readable names alongside codes in price_history. Called once per
+    run; if it fails, the script still works, just without names.
+    """
+    try:
+        resp = requests.get("https://api.travelpayouts.com/data/en/cities.json", timeout=30)
+        resp.raise_for_status()
+        cities = resp.json()
+        return {c["code"]: c["name"] for c in cities if c.get("code")}
+    except (requests.RequestException, ValueError) as e:
+        print(f"[WARN] Could not load city names dictionary: {e}")
+        return {}
+
+
+def save_price(conn, origin, destination, price, trip_type, found_at,
+                origin_name=None, destination_name=None, link=None):
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO price_history (origin, destination, price, trip_type, found_at, checked_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s)",
-            (origin, destination, price, trip_type, found_at, datetime.now(timezone.utc).isoformat()),
+            "INSERT INTO price_history "
+            "(origin, destination, price, trip_type, found_at, checked_at, "
+            " origin_name, destination_name, link) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (origin, destination, price, trip_type, found_at,
+             datetime.now(timezone.utc).isoformat(),
+             origin_name, destination_name, link),
         )
     conn.commit()
 
@@ -385,8 +413,11 @@ def send_alert_email(deals, rss_matches):
     if deals:
         lines.append("Cenove anomalie (Travelpayouts, algoritmicky nalezene):\n")
         for d in deals:
+            origin_label = d.get("origin_name") or d["origin"]
+            dest_label = d.get("destination_name") or d["destination"]
             line = (
-                f"  {d['origin']} -> {d['destination']}: {d['price']:.0f} {CURRENCY.upper()} "
+                f"  {origin_label} ({d['origin']}) -> {dest_label} ({d['destination']}): "
+                f"{d['price']:.0f} {CURRENCY.upper()} "
                 f"(baseline {d['baseline']:.0f}, -{d['discount_pct']:.0f}%) [{d['trip_type']}]"
             )
             lines.append(line)
@@ -419,6 +450,7 @@ def send_alert_email(deals, rss_matches):
 
 def main():
     conn = get_db_connection()
+    city_names = load_city_names()
     found_deals = []
 
     for origin in ORIGINS:
@@ -433,12 +465,19 @@ def main():
                 destination = fare["destination"]
                 price = fare["price"]
                 found_at = fare["found_at"]
+                origin_name = ORIGINS.get(origin, city_names.get(origin, origin))
+                destination_name = city_names.get(destination, destination)
 
                 baseline, sample_count = get_baseline(conn, origin, destination, trip_type)
 
                 # Always store the observation — this is what builds the
                 # baseline over time, so keep it even on the first (silent) runs.
-                save_price(conn, origin, destination, price, trip_type, found_at)
+                save_price(
+                    conn, origin, destination, price, trip_type, found_at,
+                    origin_name=origin_name,
+                    destination_name=destination_name,
+                    link=fare.get("link"),
+                )
 
                 if baseline is None:
                     continue  # not enough history yet for this route
@@ -455,6 +494,8 @@ def main():
                     found_deals.append({
                         "origin": origin,
                         "destination": destination,
+                        "origin_name": origin_name,
+                        "destination_name": destination_name,
                         "price": price,
                         "baseline": baseline,
                         "discount_pct": discount_pct,
