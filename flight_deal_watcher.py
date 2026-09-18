@@ -74,21 +74,14 @@ AVIASALES_MARKER = os.environ.get("AVIASALES_MARKER")  # optional
 
 CURRENCY = "eur"
 
-# Departure airports: SK, AT, DE, HU, PL, CZ, FR — extend/trim as you like.
+# Departure airports — trimmed to the 4 closest hubs to cut GitHub Actions
+# runtime (was 13 origins; each origin multiplies both API calls and DB
+# round-trips). Extend again later if Actions minutes stop being a concern.
 ORIGINS = {
     "BTS": "Bratislava",
     "VIE": "Vienna",
-    "FRA": "Frankfurt",
-    "MUC": "Munich",
-    "BER": "Berlin",
-    "DUS": "Dusseldorf",
     "BUD": "Budapest",
-    "WAW": "Warsaw",
-    "KRK": "Krakow",
     "PRG": "Prague",
-    "CDG": "Paris (CDG)",
-    "ORY": "Paris (Orly)",
-    "LYS": "Lyon",
 }
 
 # Anomaly-detection thresholds — tune these once you see real data.
@@ -194,7 +187,11 @@ def save_price(conn, origin, destination, price, trip_type, found_at,
              datetime.now(timezone.utc).isoformat(),
              origin_name, destination_name, link),
         )
-    conn.commit()
+    # No commit here anymore — batched once per origin/trip_type in main()
+    # instead of once per fare row. With "to anywhere" returning potentially
+    # hundreds of fares per origin, per-row commits meant thousands of
+    # individual network round-trips to Supabase per run, which is what was
+    # almost certainly behind the 1h20m runtime.
 
 
 def get_baseline(conn, origin, destination, trip_type):
@@ -503,6 +500,10 @@ def main():
                         "link": fare.get("link"),
                     })
                     mark_alerted(conn, origin, destination, price)
+
+            # Batch-commit once per origin/trip_type instead of once per
+            # fare row — see the note in save_price() for why.
+            conn.commit()
 
     rss_matches = fetch_rss_deals(conn)
 
